@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { supabase, errMsg } from '../../lib/supabase'
+import { supabase, errMsg, EMP_COLS } from '../../lib/supabase'
 import { useLoad } from '../../lib/hooks'
-import { type Holiday } from '../../lib/types'
+import { type Holiday, type Employee, CARGOS } from '../../lib/types'
 import { dateEs, DIAS, isoDow, todayLP } from '../../lib/time'
 import { Empty, ErrorBox, Field, Notice, PageHead, Spinner } from '../../components/ui'
 
@@ -28,6 +28,35 @@ export default function Feriados() {
     if (error) throw error
     return (data ?? []) as Holiday[]
   }, [year])
+
+  const { data: cont } = useLoad(async () => {
+    const [h, e] = await Promise.all([
+      supabase.from('holidays').select('holiday_date, name').gte('holiday_date', `${year}-01-01`).lte('holiday_date', `${year}-12-31`).order('holiday_date'),
+      supabase.from('employees').select(EMP_COLS).eq('active', true).order('full_name'),
+    ])
+    if (h.error) throw h.error
+    if (e.error) throw e.error
+    const fechas = (h.data ?? []).map((x) => x.holiday_date as string)
+    let turnos: { employee_id: string; work_date: string; kind: string }[] = []
+    if (fechas.length > 0) {
+      const s = await supabase.from('shifts').select('employee_id, work_date, kind').in('work_date', fechas)
+      if (s.error) throw s.error
+      turnos = (s.data ?? []) as typeof turnos
+    }
+    const filas = ((e.data ?? []) as Employee[]).map((emp) => {
+      const trab: string[] = []
+      let libres = 0
+      let sin = 0
+      for (const f of fechas) {
+        const t = turnos.filter((x) => x.employee_id === emp.id && x.work_date === f)
+        if (t.some((x) => x.kind === 'trabajo')) trab.push(f)
+        else if (t.length > 0) libres++
+        else sin++
+      }
+      return { emp, trab, libres, sin }
+    })
+    return { filas, total: fechas.length }
+  }, [year, data?.length ?? -1])
 
   const agregar = async () => {
     setMsg(null)
@@ -91,6 +120,24 @@ export default function Feriados() {
             ))}</tbody>
           </table></div>
         ))}
+      </div>
+      <div className="panel">
+        <h2>Reparto de feriados {year}</h2>
+        <p className="muted small" style={{ margin: '.3rem 0 .8rem' }}>Cuenta los feriados que cada empleado tiene asignados en Horarios, para repartirlos con equidad. Los feriados no se compensan.</p>
+        {!cont || cont.total === 0 ? <Empty>Carga los feriados del año para ver el reparto.</Empty> : (
+          <div className="tbl-wrap"><table className="tbl stack">
+            <thead><tr><th>Empleado</th><th className="num">Trabajados</th><th className="num">Libres por feriado</th><th className="num">Sin asignar</th><th>Fechas trabajadas</th></tr></thead>
+            <tbody>{cont.filas.map((f) => (
+              <tr key={f.emp.id}>
+                <td data-label="Empleado"><b>{f.emp.full_name}</b><div className="small muted">{CARGOS[f.emp.cargo]}</div></td>
+                <td data-label="Trabajados" className="num"><b>{f.trab.length}</b></td>
+                <td data-label="Libres por feriado" className="num">{f.libres}</td>
+                <td data-label="Sin asignar" className="num">{f.sin > 0 ? <span className="badge warn">! {f.sin}</span> : 0}</td>
+                <td data-label="Fechas trabajadas">{f.trab.length === 0 ? '—' : f.trab.map((d) => dateEs(d)).join(', ')}</td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+        )}
       </div>
     </div>
   )

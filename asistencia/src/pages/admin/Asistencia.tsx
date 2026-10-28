@@ -81,7 +81,7 @@ export default function Asistencia() {
 }
 
 function Detalle({ shiftId, onClose, onChanged }: { shiftId: string; onClose: () => void; onChanged: () => void }) {
-  const [sub, setSub] = useState<null | { t: 'corregir'; rec: Row } | { t: 'manual' } | { t: 'justificar'; kind: string }>(null)
+  const [sub, setSub] = useState<null | { t: 'corregir'; rec: Row } | { t: 'anular'; rec: Row } | { t: 'manual' } | { t: 'justificar'; kind: string }>(null)
   const { data, loading, error, reload } = useLoad(async () => {
     const [j, r, i] = await Promise.all([
       supabase.from('v_jornadas').select('*').eq('shift_id', shiftId).maybeSingle(),
@@ -101,6 +101,7 @@ function Detalle({ shiftId, onClose, onChanged }: { shiftId: string; onClose: ()
 
   const refrescar = () => { reload(true); onChanged() }
   const j = data?.j
+  const ventana = { ini: (j?.scheduled_start as string) ?? '', fin: (j?.scheduled_end as string) ?? '' }
   const tiene = (k: string) => data?.inc.some((x) => x.kind === k)
   const usados = new Set(data?.recs.map((x) => x.kind))
 
@@ -139,7 +140,7 @@ function Detalle({ shiftId, onClose, onChanged }: { shiftId: string; onClose: ()
                           <td data-label="Inicio">{dateTimeLP(r.started_at)}{cambio && r.original_started_at !== r.started_at && <div className="small muted">Original: {dateTimeLP(r.original_started_at)}</div>}</td>
                           <td data-label="Fin">{r.ended_at ? dateTimeLP(r.ended_at) : <span className="badge warn">Sin cerrar</span>}{cambio && r.original_ended_at !== r.ended_at && <div className="small muted">Original: {r.original_ended_at ? dateTimeLP(r.original_ended_at) : 'sin cierre'}</div>}</td>
                           <td data-label="Origen">{r.origin === 'admin' ? <span className="badge info">Administración</span> : 'Empleado'}{cambio && <span className="badge gold" style={{ marginLeft: 4 }}>Corregido</span>}{r.kind === 'jornada' && r.device_id === null && r.origin === 'empleado' && <span className="badge warn" style={{ marginLeft: 4 }}>Equipo no autorizado</span>}</td>
-                          <td className="right"><button className="btn sm" onClick={() => setSub({ t: 'corregir', rec: r })}>Corregir</button></td>
+                          <td className="right nowrap"><button className="btn sm" onClick={() => setSub({ t: 'corregir', rec: r })}>Corregir</button>{' '}<button className="btn sm ghost" onClick={() => setSub({ t: 'anular', rec: r })}>Anular</button></td>
                         </tr>
                       )
                     })}
@@ -178,14 +179,15 @@ function Detalle({ shiftId, onClose, onChanged }: { shiftId: string; onClose: ()
           )}
         </div>
       )}
-      {sub?.t === 'corregir' && <Corregir rec={sub.rec} onClose={() => setSub(null)} onDone={() => { setSub(null); refrescar() }} />}
-      {sub?.t === 'manual' && data && <Manual shiftId={shiftId} usados={usados} onClose={() => setSub(null)} onDone={() => { setSub(null); refrescar() }} />}
+      {sub?.t === 'corregir' && <Corregir rec={sub.rec} ventana={ventana} onClose={() => setSub(null)} onDone={() => { setSub(null); refrescar() }} />}
+      {sub?.t === 'anular' && <Anular rec={sub.rec} onClose={() => setSub(null)} onDone={() => { setSub(null); refrescar() }} />}
+      {sub?.t === 'manual' && data && <Manual shiftId={shiftId} usados={usados} ventana={ventana} onClose={() => setSub(null)} onDone={() => { setSub(null); refrescar() }} />}
       {sub?.t === 'justificar' && data && <Justificar shiftId={shiftId} empId={j?.employee_id} kind={sub.kind} onClose={() => setSub(null)} onDone={() => { setSub(null); refrescar() }} />}
     </Modal>
   )
 }
 
-function Corregir({ rec, onClose, onDone }: { rec: Row; onClose: () => void; onDone: () => void }) {
+function Corregir({ rec, ventana, onClose, onDone }: { rec: Row; ventana: Ventana; onClose: () => void; onDone: () => void }) {
   const [ini, setIni] = useState(isoToInput(rec.started_at))
   const [fin, setFin] = useState(isoToInput(rec.ended_at))
   const [why, setWhy] = useState('')
@@ -194,6 +196,8 @@ function Corregir({ rec, onClose, onDone }: { rec: Row; onClose: () => void; onD
   const go = async () => {
     setErr('')
     if (why.trim().length < 3) return setErr('Escribe el motivo de la corrección.')
+    const malo = revisarFechas(ventana, ini, fin)
+    if (malo) return setErr(malo)
     setBusy(true)
     const { error } = await supabase.rpc('corregir_registro', { p_record_id: rec.id, p_started_at: inputToISO(ini), p_ended_at: inputToISO(fin), p_reason: why })
     setBusy(false)
@@ -205,8 +209,8 @@ function Corregir({ rec, onClose, onDone }: { rec: Row; onClose: () => void; onD
       footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn" disabled={busy} onClick={go}>Guardar corrección</button></>}>
       <div className="stack-v">
         <div className="form-grid">
-          <Field label="Inicio"><input type="datetime-local" value={ini} onChange={(e) => setIni(e.target.value)} /></Field>
-          <Field label="Fin" hint="Déjalo vacío si debe seguir abierto"><input type="datetime-local" value={fin} onChange={(e) => setFin(e.target.value)} /></Field>
+          <Field label="Inicio"><input type="datetime-local" min={limites(ventana).min} max={limites(ventana).max} value={ini} onChange={(e) => setIni(e.target.value)} /></Field>
+          <Field label="Fin" hint="Déjalo vacío si debe seguir abierto"><input type="datetime-local" min={limites(ventana).min} max={limites(ventana).max} value={fin} onChange={(e) => setFin(e.target.value)} /></Field>
         </div>
         <Field label="Motivo (obligatorio)"><textarea value={why} onChange={(e) => setWhy(e.target.value)} /></Field>
         <Notice tone="info">El registro original se conserva y la corrección queda en el historial con tu usuario.</Notice>
@@ -216,7 +220,7 @@ function Corregir({ rec, onClose, onDone }: { rec: Row; onClose: () => void; onD
   )
 }
 
-function Manual({ shiftId, usados, onClose, onDone }: { shiftId: string; usados: Set<string>; onClose: () => void; onDone: () => void }) {
+function Manual({ shiftId, usados, ventana, onClose, onDone }: { shiftId: string; usados: Set<string>; ventana: Ventana; onClose: () => void; onDone: () => void }) {
   const libres = Object.keys(COMIDAS).filter((k) => !usados.has(k))
   const [kind, setKind] = useState(libres[0] ?? '')
   const [ini, setIni] = useState('')
@@ -228,6 +232,8 @@ function Manual({ shiftId, usados, onClose, onDone }: { shiftId: string; usados:
     setErr('')
     if (!kind || !ini) return setErr('Indica el tipo y la hora de inicio.')
     if (why.trim().length < 3) return setErr('Escribe el motivo.')
+    const malo = revisarFechas(ventana, ini, fin)
+    if (malo) return setErr(malo)
     setBusy(true)
     const { error } = await supabase.rpc('crear_registro_manual', { p_shift_id: shiftId, p_kind: kind, p_started_at: inputToISO(ini), p_ended_at: inputToISO(fin), p_reason: why })
     setBusy(false)
@@ -241,8 +247,8 @@ function Manual({ shiftId, usados, onClose, onDone }: { shiftId: string; usados:
         {libres.length === 0 && <Notice tone="info">Este turno ya tiene todos los tipos de registro.</Notice>}
         <Field label="Tipo"><select value={kind} onChange={(e) => setKind(e.target.value)}>{libres.map((k) => <option key={k} value={k}>{COMIDAS[k]}</option>)}</select></Field>
         <div className="form-grid">
-          <Field label="Inicio"><input type="datetime-local" value={ini} onChange={(e) => setIni(e.target.value)} /></Field>
-          <Field label="Fin (opcional)"><input type="datetime-local" value={fin} onChange={(e) => setFin(e.target.value)} /></Field>
+          <Field label="Inicio"><input type="datetime-local" min={limites(ventana).min} max={limites(ventana).max} value={ini} onChange={(e) => setIni(e.target.value)} /></Field>
+          <Field label="Fin (opcional)"><input type="datetime-local" min={limites(ventana).min} max={limites(ventana).max} value={fin} onChange={(e) => setFin(e.target.value)} /></Field>
         </div>
         <Field label="Motivo (obligatorio)"><textarea value={why} onChange={(e) => setWhy(e.target.value)} placeholder="Ej.: olvidó registrar su salida" /></Field>
         {err && <Notice tone="err">{err}</Notice>}
@@ -271,6 +277,54 @@ function Justificar({ shiftId, empId, kind, onClose, onDone }: { shiftId: string
       <div className="stack-v">
         <Field label="Justificación"><textarea value={note} onChange={(e) => setNote(e.target.value)} /></Field>
         {kind !== 'falta_justificada' && <Notice tone="info">Solo se acepta si se aprueba antes de que ocurra el retraso o la salida anticipada.</Notice>}
+        {err && <Notice tone="err">{err}</Notice>}
+      </div>
+    </Modal>
+  )
+}
+
+interface Ventana { ini: string; fin: string }
+const DIA = 86400000
+/** Límites del selector de fecha: el día del turno, un día antes y un día después. */
+function limites(v: Ventana) {
+  if (!v.ini || !v.fin) return { min: undefined, max: undefined }
+  return { min: isoToInput(new Date(Date.parse(v.ini) - DIA).toISOString()), max: isoToInput(new Date(Date.parse(v.fin) + DIA).toISOString()) }
+}
+/** Detecta fechas con el año o el día mal escritos antes de enviar. */
+function revisarFechas(v: Ventana, ini: string, fin: string): string | null {
+  if (!v.ini || !v.fin) return null
+  const lo = Date.parse(v.ini) - DIA
+  const hi = Date.parse(v.fin) + DIA
+  for (const [nombre, val] of [['inicio', ini], ['fin', fin]] as const) {
+    if (!val) continue
+    const t = Date.parse(inputToISO(val) ?? '')
+    if (Number.isNaN(t) || t < lo || t > hi) {
+      return `La fecha de ${nombre} parece incorrecta. Debe estar dentro del día del turno (revisa especialmente el año).`
+    }
+  }
+  return null
+}
+
+function Anular({ rec, onClose, onDone }: { rec: Row; onClose: () => void; onDone: () => void }) {
+  const [why, setWhy] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const go = async () => {
+    setErr('')
+    if (why.trim().length < 3) return setErr('Escribe el motivo de la anulación.')
+    setBusy(true)
+    const { error } = await supabase.rpc('anular_registro', { p_record_id: rec.id, p_reason: why })
+    setBusy(false)
+    if (error) return setErr(errMsg(error))
+    onDone()
+  }
+  return (
+    <Modal title={`Anular ${COMIDAS[rec.kind]?.toLowerCase() ?? rec.kind}`} onClose={onClose}
+      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn danger" disabled={busy} onClick={go}>Anular registro</button></>}>
+      <div className="stack-v">
+        <p>Se quitará este registro ({dateTimeLP(rec.started_at)}{rec.ended_at ? ` a ${dateTimeLP(rec.ended_at)}` : ', sin cerrar'}) y podrás volver a cargarlo correctamente.</p>
+        <Field label="Motivo (obligatorio)"><textarea value={why} onChange={(e) => setWhy(e.target.value)} placeholder="Ej.: se cargó con una fecha equivocada" /></Field>
+        <Notice tone="info">La anulación queda en el historial con tu usuario y el contenido original del registro.</Notice>
         {err && <Notice tone="err">{err}</Notice>}
       </div>
     </Modal>

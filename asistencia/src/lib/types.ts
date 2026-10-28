@@ -30,6 +30,7 @@ export interface Shift {
   rest_end: string | null
   off_reason: 'semanal' | 'feriado' | 'cambio' | null
   change_note: string | null
+  turno_num: number
 }
 export interface TimeRecord {
   id: string

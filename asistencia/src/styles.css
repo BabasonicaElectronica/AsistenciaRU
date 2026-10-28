@@ -276,3 +276,16 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: .92rem; }
 /* ---------- Utilidades de visibilidad ---------- */
 .only-mobile { display: none; }
 @media (max-width: 900px) { .only-mobile { display: block; } .only-desktop { display: none; } }
+
+/* ---------- Avisos de planificación ---------- */
+.planner .pc.vacio.aviso { background: #fff7ec; color: var(--warn); border-left-style: dashed; font-weight: 600; }
+.planner .pc.vacio.aviso:hover { background: #ffeedd; }
+.planner .ph .btn { margin-top: 4px; }
+.pc .l2 { display: block; }
+.fer-row { display: grid; grid-template-columns: 1.3fr 1fr; gap: .6rem .9rem; padding: .7rem 0; border-top: 1px solid var(--borde); align-items: start; }
+.fer-row .times { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.fer-row .times input[type=time] { width: 130px; }
+.seg { display: inline-flex; border: 1px solid var(--granate); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: #fff; padding: .4rem .8rem; cursor: pointer; font-weight: 600; color: var(--granate); min-height: 38px; }
+.seg button.on { background: var(--granate); color: #fff; }
+@media (max-width: 720px) { .fer-row { grid-template-columns: 1fr; } }

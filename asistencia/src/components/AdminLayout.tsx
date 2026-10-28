@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { Modal } from './ui'
+import { APP_VERSION } from '../lib/version'
 
 const ITEMS = [
   { to: '/admin', end: true, label: 'Panel', ico: '◧' },
@@ -37,6 +38,7 @@ export default function AdminLayout() {
         <div className="side-foot">
           <div>{email}</div>
           <button className="btn sm" onClick={signOut}>Cerrar sesión</button>
+          <div className="small" style={{ marginTop: '.6rem', opacity: .8 }}>Versión {APP_VERSION}</div>
         </div>
       </aside>
 
@@ -62,6 +64,7 @@ export default function AdminLayout() {
               ))}
               <div className="muted small">{email}</div>
               <button className="btn" onClick={signOut}>Cerrar sesión</button>
+              <div className="muted small">Versión {APP_VERSION}</div>
             </div>
           </Modal>
         </div>

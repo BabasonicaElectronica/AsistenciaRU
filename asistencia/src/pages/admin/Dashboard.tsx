@@ -13,7 +13,7 @@ export default function Dashboard() {
   const ms = monthStart(hoy)
 
   const { data, loading, error, reload } = useLoad(async () => {
-    const [jor, sem, mes, libres, hol, emps, disp] = await Promise.all([
+    const [jor, sem, mes, libres, hol, emps, disp, prox] = await Promise.all([
       supabase.from('v_jornadas').select('*').gte('work_date', addDays(hoy, -3)).lte('work_date', hoy).order('scheduled_start'),
       supabase.from('v_resumen_semanal').select('*').eq('semana_inicio', ws),
       supabase.from('v_resumen_mensual').select('*').eq('mes_inicio', ms),
@@ -21,11 +21,12 @@ export default function Dashboard() {
       supabase.from('holidays').select('*').gte('holiday_date', hoy).lte('holiday_date', addDays(hoy, 30)).order('holiday_date'),
       supabase.from('employees').select(EMP_COLS).eq('active', true),
       supabase.from('v_jornadas').select('shift_id, full_name, work_date, entrada_real').eq('entrada_en_dispositivo_autorizado', false).gte('work_date', addDays(hoy, -7)),
+      supabase.from('shifts').select('employee_id, work_date').gte('work_date', hoy).lte('work_date', addDays(hoy, 6)),
     ])
-    for (const r of [jor, sem, mes, libres, hol, emps, disp]) if (r.error) throw r.error
+    for (const r of [jor, sem, mes, libres, hol, emps, disp, prox]) if (r.error) throw r.error
     return {
       jor: (jor.data ?? []) as Row[], sem: (sem.data ?? []) as Row[], mes: (mes.data ?? []) as Row[],
-      libres: (libres.data ?? []) as Row[], hol: (hol.data ?? []) as Row[], emps: (emps.data ?? []) as Row[], disp: (disp.data ?? []) as Row[],
+      libres: (libres.data ?? []) as Row[], hol: (hol.data ?? []) as Row[], emps: (emps.data ?? []) as Row[], disp: (disp.data ?? []) as Row[], prox: (prox.data ?? []) as Row[],
     }
   }, [], { every: 60000 })
 
@@ -40,6 +41,13 @@ export default function Dashboard() {
   const bloqueados = data.emps.filter((e) => e.pin_locked_until && new Date(e.pin_locked_until) > new Date())
   const maxMes = Math.max(1, ...data.mes.map((r) => r.minutos_retraso_total))
   const maxSem = Math.max(1, ...data.sem.map((r) => r.minutos_retraso_total))
+  const sinAsignar: { fecha: string; nombres: string[] }[] = []
+  for (let i = 0; i < 7; i++) {
+    const fecha = addDays(hoy, i)
+    const nombres = data.emps.filter((e) => !data.prox.some((p) => p.employee_id === e.id && p.work_date === fecha)).map((e) => e.full_name as string)
+    if (nombres.length > 0) sinAsignar.push({ fecha, nombres })
+  }
+  const totalSin = sinAsignar.reduce((a, x) => a + x.nombres.length, 0)
   const ordenar = (a: Row[]) => [...a].sort((x, y) => y.minutos_retraso_total - x.minutos_retraso_total)
 
   return (
@@ -56,6 +64,22 @@ export default function Dashboard() {
         <div className={`kpi ${cnt('salida_faltante') ? 'err' : ''}`}><div className="n">{cnt('salida_faltante')}</div><div className="l">Salidas faltantes</div></div>
         <div className={`kpi ${cnt('incompleta') ? 'warn' : ''}`}><div className="n">{cnt('incompleta')}</div><div className="l">Jornadas incompletas</div></div>
       </div>
+
+      {totalSin > 0 && (
+        <div className="panel">
+          <div className="row between">
+            <h2>Sin turno asignado en los próximos 7 días</h2>
+            <Link className="btn sm" to="/admin/horarios">Ir a Horarios</Link>
+          </div>
+          <p className="muted small" style={{ margin: '.3rem 0 .6rem' }}>{totalSin} casilla(s) sin turno ni día libre. Quien no tiene turno no puede registrar su entrada.</p>
+          {sinAsignar.map((x) => (
+            <div key={x.fecha} className="row" style={{ padding: '.2rem 0' }}>
+              <b style={{ minWidth: 90 }}>{dayLabel(x.fecha)}</b>
+              <span>{x.nombres.join(', ')}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="panel">
         <h2>Alertas para revisar</h2>
