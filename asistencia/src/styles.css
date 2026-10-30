@@ -270,7 +270,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: .92rem; }
   .tbl.stack thead { display: table-header-group; }
   .tbl.stack td::before { content: none; }
   .tbl.stack tr { border: 0; padding: 0; margin: 0; }
-  @page { margin: 14mm; }
+  @page { size: landscape; margin: 12mm; }
+  table.tbl { font-size: 9pt; }
 }
 
 /* ---------- Utilidades de visibilidad ---------- */

@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supabase, EMP_COLS, errMsg } from '../../lib/supabase'
 import { useLoad } from '../../lib/hooks'
-import { CARGOS, type Employee, type Holiday, type Shift } from '../../lib/types'
-import { addDays, dateEs, DIAS_CORTO, hhmmOf, isoDow, todayLP, toISO, weekStart, ymdLP, dayLabel } from '../../lib/time'
+import { CARGOS, type Employee, type Holiday, type Row, type Shift } from '../../lib/types'
+import { addDays, dateEs, DIAS_CORTO, DIAS, hhmmOf, isoDow, todayLP, toISO, weekStart, ymdLP, dayLabel } from '../../lib/time'
 import { ErrorBox, Field, Modal, Notice, PageHead, Spinner } from '../../components/ui'
 
 const DEFAULTS: Record<string, { ini: string; fin: string }> = {
@@ -42,6 +42,7 @@ export default function Horarios() {
   const [day, setDay] = useState(hoy)
   const [edit, setEdit] = useState<{ emp: Employee; date: string } | null>(null)
   const [feriado, setFeriado] = useState<Holiday | null>(null)
+  const [cambio, setCambio] = useState(false)
   const [info, setInfo] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const dates = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(ws, i)), [ws])
@@ -55,6 +56,15 @@ export default function Horarios() {
     ])
     for (const r of [e, s, h]) if (r.error) throw r.error
     return { emps: (e.data ?? []) as Employee[], shifts: (s.data ?? []) as Shift[], hol: (h.data ?? []) as Holiday[] }
+  }, [ws])
+
+  const { data: cambios, reload: recargarCambios } = useLoad(async () => {
+    const fin = addDays(ws, 6)
+    const { data, error } = await supabase.from('day_off_changes').select('*, employees(full_name)')
+      .or(`and(fecha_original.gte.${ws},fecha_original.lte.${fin}),and(fecha_nueva.gte.${ws},fecha_nueva.lte.${fin})`)
+      .order('created_at', { ascending: false })
+    if (error) return { ok: false, rows: [] as Row[] }
+    return { ok: true, rows: (data ?? []) as Row[] }
   }, [ws])
 
   const shiftsOf = (emp: string, date: string) =>
@@ -90,6 +100,8 @@ export default function Horarios() {
       .map((o) => {
         const nd = addDays(o.work_date, 7)
         if (shiftsOf(o.employee_id, nd).length > 0) return null
+        const fijo = data?.emps.find((e) => e.id === o.employee_id)?.weekly_day_off
+        if (o.kind === 'trabajo' && fijo === isoDow(nd)) return null   // su día libre fijo (el turno fue un cambio de la semana pasada)
         const mv = (iso: string | null) => (iso ? toISO(nd, hhmmOf(iso), diffDays(ymdLP(iso), o.work_date)) : null)
         return {
           employee_id: o.employee_id, work_date: nd, kind: o.kind, turno_num: o.turno_num,
@@ -141,6 +153,7 @@ export default function Horarios() {
           <div className="row">
             <button className="btn sm" disabled={busy} onClick={generarLibres}>Programar días libres semanales</button>
             <button className="btn sm ghost" disabled={busy} onClick={copiarAnterior}>Copiar semana anterior</button>
+            <button className="btn sm gold" onClick={() => setCambio(true)}>Cambiar día libre</button>
           </div>
         </div>
         {info && <div style={{ marginTop: '.8rem' }}><Notice tone={info.tone}>{info.text}</Notice></div>}
@@ -209,6 +222,29 @@ export default function Horarios() {
           emp={edit.emp} date={edit.date} list={shiftsOf(edit.emp.id, edit.date)} shifts={data.shifts} emps={data.emps}
           onClose={() => setEdit(null)} onSaved={() => { setEdit(null); reload() }} onPartial={() => reload(true)}
         />
+      )}
+      {data && cambios && cambios.ok && cambios.rows.length > 0 && (
+        <div className="panel">
+          <h2>Cambios de día libre autorizados esta semana</h2>
+          <div className="tbl-wrap" style={{ marginTop: '.6rem' }}>
+            <table className="tbl stack">
+              <thead><tr><th>Empleado</th><th>Cambio</th><th>Día libre</th><th>Motivo</th><th>Aprobó</th></tr></thead>
+              <tbody>{cambios.rows.map((c) => (
+                <tr key={c.id}>
+                  <td data-label="Empleado"><b>{(c.employees as Row)?.full_name}</b></td>
+                  <td data-label="Cambio">{c.tipo === 'intercambio' ? <span className="badge info">Intercambio</span> : <span className="badge gold">Movido</span>}</td>
+                  <td data-label="Día libre">{dayLabel(c.fecha_original)} → <b>{dayLabel(c.fecha_nueva)}</b></td>
+                  <td data-label="Motivo">{c.motivo}</td>
+                  <td data-label="Aprobó">{c.aprobado_por}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {cambio && data && (
+        <CambioModal emps={data.emps} onClose={() => setCambio(false)} onSaved={() => { setCambio(false); reload(); recargarCambios() }} />
       )}
       {feriado && data && (
         <FeriadoModal
@@ -496,6 +532,157 @@ function FeriadoModal({ holiday, emps, dayShifts, onClose, onSaved }: {
         <Field label="Nota (opcional)" hint={`Si la dejas vacía se guarda “Feriado: ${holiday.name}”.`}>
           <textarea value={note} onChange={(e) => setNote(e.target.value)} />
         </Field>
+        {err && <Notice tone="err">{err}</Notice>}
+      </div>
+    </Modal>
+  )
+}
+
+/* ---------- Cambiar el día libre de un empleado, o intercambiar entre dos ---------- */
+function SelectorLibre({ emps, emp, fecha, onChange, titulo, excluir }: {
+  emps: Employee[]; emp: string; fecha: string; titulo: string; excluir?: string
+  onChange: (emp: string, fecha: string) => void
+}) {
+  const hoy = todayLP()
+  const { data } = useLoad(async () => {
+    if (!emp) return { libres: [] as Row[], hol: [] as Row[] }
+    const [l, h] = await Promise.all([
+      supabase.from('shifts').select('work_date, off_reason').eq('employee_id', emp).eq('kind', 'libre')
+        .gte('work_date', addDays(hoy, -14)).lte('work_date', addDays(hoy, 120)).order('work_date'),
+      supabase.from('holidays').select('holiday_date, name').gte('holiday_date', addDays(hoy, -14)).lte('holiday_date', addDays(hoy, 120)),
+    ])
+    if (l.error) throw l.error
+    return { libres: (l.data ?? []) as Row[], hol: (h.data ?? []) as Row[] }
+  }, [emp])
+  const motivo: Record<string, string> = { semanal: 'libre semanal', feriado: 'libre por feriado', cambio: 'libre por cambio' }
+  return (
+    <div className="form-grid">
+      <Field label={`${titulo}: empleado`}>
+        <select value={emp} onChange={(e) => onChange(e.target.value, '')}>
+          <option value="">Elige…</option>
+          {emps.filter((e) => e.id !== excluir).map((e) => <option key={e.id} value={e.id}>{e.full_name}</option>)}
+        </select>
+      </Field>
+      <Field label="Día libre actual que se cambia">
+        <select value={fecha} disabled={!emp} onChange={(e) => onChange(emp, e.target.value)}>
+          <option value="">{emp ? 'Elige un día libre…' : 'Primero elige al empleado'}</option>
+          {data?.libres.map((l) => {
+            const h = data.hol.find((x) => x.holiday_date === l.work_date)
+            return <option key={l.work_date} value={l.work_date}>{DIAS[isoDow(l.work_date) - 1]} {dateEs(l.work_date)} · {motivo[l.off_reason] ?? 'libre'}{h ? ` · ${h.name}` : ''}</option>
+          })}
+        </select>
+      </Field>
+    </div>
+  )
+}
+
+function CambioModal({ emps, onClose, onSaved }: { emps: Employee[]; onClose: () => void; onSaved: () => void }) {
+  const [tipo, setTipo] = useState<'mover' | 'intercambio'>('mover')
+  const [empA, setEmpA] = useState('')
+  const [fechaA, setFechaA] = useState('')
+  const [empB, setEmpB] = useState('')
+  const [fechaB, setFechaB] = useState('')
+  const [nueva, setNueva] = useState('')
+  const [fA, setFA] = useState<TForm>(formFrom(undefined, DEFAULTS.camarero))
+  const [fB, setFB] = useState<TForm>(formFrom(undefined, DEFAULTS.camarero))
+  const [tocoA, setTocoA] = useState(false)
+  const [tocoB, setTocoB] = useState(false)
+  const [motivo, setMotivo] = useState('')
+  const [aprobado, setAprobado] = useState('Administración')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const a = emps.find((e) => e.id === empA)
+  const b = emps.find((e) => e.id === empB)
+
+  // Sugiere el horario: cada uno toma el turno que el otro deja ese día; si no hay, el habitual de su cargo.
+  const { data: previo } = useLoad(async () => {
+    if (tipo !== 'intercambio' || !empA || !fechaA || !empB || !fechaB) return null
+    const [x, y] = await Promise.all([
+      supabase.from('shifts').select('*').eq('employee_id', empB).eq('work_date', fechaA).eq('kind', 'trabajo').order('turno_num').limit(1),
+      supabase.from('shifts').select('*').eq('employee_id', empA).eq('work_date', fechaB).eq('kind', 'trabajo').order('turno_num').limit(1),
+    ])
+    return { paraA: ((x.data ?? []) as Shift[])[0], paraB: ((y.data ?? []) as Shift[])[0] }
+  }, [tipo, empA, fechaA, empB, fechaB])
+
+  useEffect(() => {
+    if (!tocoA) setFA(formFrom(previo?.paraA, DEFAULTS[a?.cargo ?? 'camarero']))
+    if (!tocoB) setFB(formFrom(previo?.paraB, DEFAULTS[b?.cargo ?? 'camarero']))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previo, empA, empB])
+
+  const trabajo = (fecha: string, f: TForm) => {
+    const t = build(fecha, f)
+    return { inicio: t.scheduled_start, fin: t.scheduled_end, descanso_inicio: t.rest_start, descanso_fin: t.rest_end }
+  }
+
+  const guardar = async () => {
+    setErr('')
+    if (!empA || !fechaA) return setErr('Elige al empleado y su día libre actual.')
+    if (motivo.trim().length < 3) return setErr('Escribe el motivo o el acuerdo que se aprobó.')
+    if (fA.ini === fA.fin) return setErr('Revisa la entrada y la salida.')
+    setBusy(true)
+    let res
+    if (tipo === 'mover') {
+      if (!nueva) { setBusy(false); return setErr('Elige la nueva fecha del día libre.') }
+      res = await supabase.rpc('mover_dia_libre', {
+        p_employee: empA, p_desde: fechaA, p_hasta: nueva, p_trabajo: trabajo(fechaA, fA), p_motivo: motivo, p_aprobado: aprobado,
+      })
+    } else {
+      if (!empB || !fechaB) { setBusy(false); return setErr('Elige al segundo empleado y su día libre actual.') }
+      if (fB.ini === fB.fin) { setBusy(false); return setErr('Revisa la entrada y la salida del segundo empleado.') }
+      res = await supabase.rpc('intercambiar_dias_libres', {
+        p_emp_a: empA, p_fecha_a: fechaA, p_emp_b: empB, p_fecha_b: fechaB,
+        p_trabajo_a: trabajo(fechaA, fA), p_trabajo_b: trabajo(fechaB, fB), p_motivo: motivo, p_aprobado: aprobado,
+      })
+    }
+    setBusy(false)
+    if (res.error) return setErr(errMsg(res.error))
+    onSaved()
+  }
+
+  return (
+    <Modal wide title="Cambiar día libre" onClose={onClose}
+      footer={<><button className="btn ghost" onClick={onClose}>Cancelar</button><button className="btn" disabled={busy} onClick={guardar}>{busy ? 'Guardando…' : 'Autorizar cambio'}</button></>}>
+      <div className="stack-v">
+        <div className="seg" role="group" aria-label="Tipo de cambio">
+          <button type="button" className={tipo === 'mover' ? 'on' : ''} onClick={() => setTipo('mover')}>Mover el día libre de un empleado</button>
+          <button type="button" className={tipo === 'intercambio' ? 'on' : ''} onClick={() => setTipo('intercambio')}>Intercambiar entre dos empleados</button>
+        </div>
+        <Notice tone="info">
+          {tipo === 'mover'
+            ? 'Sirve para pasar un feriado o una salida semanal a otra fecha. El día libre original pasa a ser día de trabajo y la fecha nueva queda libre: si era un feriado, esa fecha queda como “libre por feriado” y no cuenta falta ni descuenta horas.'
+            : 'Cada empleado sale el día libre del otro. Los días libres fijos de cada uno no cambian: el intercambio vale solo esta vez.'}
+          {' '}Queda registrado con el motivo y quién lo aprobó.
+        </Notice>
+
+        <SelectorLibre emps={emps} emp={empA} fecha={fechaA} titulo={tipo === 'mover' ? 'Empleado' : 'Primer empleado'}
+          onChange={(e, f) => { setEmpA(e); setFechaA(f); setTocoA(false) }} excluir={tipo === 'intercambio' ? empB : undefined} />
+        {tipo === 'mover' && (
+          <Field label="Nueva fecha del día libre" hint="El empleado quedará libre ese día y trabajará el día libre original.">
+            <input type="date" value={nueva} onChange={(e) => setNueva(e.target.value)} />
+          </Field>
+        )}
+        {tipo === 'intercambio' && (
+          <SelectorLibre emps={emps} emp={empB} fecha={fechaB} titulo="Segundo empleado"
+            onChange={(e, f) => { setEmpB(e); setFechaB(f); setTocoB(false) }} excluir={empA} />
+        )}
+
+        {empA && fechaA && (
+          <div className="panel" style={{ background: '#fffdf6' }}>
+            <TurnoCampos f={fA} set={(f) => { setFA(f); setTocoA(true) }} titulo={`${a?.full_name} trabajará el ${dateEs(fechaA)}`} />
+          </div>
+        )}
+        {tipo === 'intercambio' && empB && fechaB && (
+          <div className="panel" style={{ background: '#fffdf6' }}>
+            <TurnoCampos f={fB} set={(f) => { setFB(f); setTocoB(true) }} titulo={`${b?.full_name} trabajará el ${dateEs(fechaB)}`} />
+          </div>
+        )}
+
+        <Field label="Motivo o acuerdo aprobado (obligatorio)">
+          <textarea value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Ej.: prefiere salir el viernes; acordado con administración" />
+        </Field>
+        <Field label="Aprobado por"><input type="text" value={aprobado} onChange={(e) => setAprobado(e.target.value)} /></Field>
         {err && <Notice tone="err">{err}</Notice>}
       </div>
     </Modal>
